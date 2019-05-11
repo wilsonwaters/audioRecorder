@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# Simple script to record an audio stream to mp3. Also saves peak audio
+# intensity value to a file for monitoring.
+#
+# This should work with any audio stream that ffmpeg can handle (i.e. wav, mp3
+# even video camera streams I guess?). I tested with android phone running
+# IPWebcam https://play.google.com/store/apps/details?id=com.pas.webcam
+#
+# I used this to keep a record of how often our dog barked during the day
+# while no one was home.
+#
+# Audio is save to timestamped mp3 files each 1 hour long. RMS peak level
+# over a 5 second frame is saved to a file. I'm using a raspberry pi and
+# don't want to wear out the SD card, so I'm writing this to shared memory.
+# change this path as needed for your purpose. I use zabbix to monitor and
+# record this file and trigger an alert when the intensity is too high.
+#
+#
+# Copyright 2019 Wilson Waters 
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+SOURCE_URL="http://user:pass@192.168.1.2/audio.wav"
+OUTPUT_FOLDER="/usr/data/audio"
+FFMPEG_COMMAND="ffmpeg -i ${SOURCE_URL} -filter:a "astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_peak" -acodec mp3 -f segment -segment_time 3600 -strftime 1 ${OUTPUT_FOLDER}/%Y-%m-%d_%H-%M-%S.mp3"
+
+# How often to update the peek
+PEAK_OUTPUT_FILE="/dev/shm/rmspeak"
+# Output peak value every x seconds
+PEAK_OUTPUT_PERIOD="5"
+PEAK_OUTPUT_NUMSAMPLES=`bc <<< ${PEAK_OUTPUT_PERIOD}/0.05`
+
+
+#-------------------------------END OF CONFIG----------------------
+
+while [ true ]
+do
+   $FFMPEG_COMMAND 2>&1 | { #ffmpeg writes output to stderr... duh
+    
+      maxVal=-150
+      numSamples=0
+
+      while IFS= read -r line
+      do
+         #echo "$line"
+         if [[ $line =~ lavfi.astats.Overall.RMS_peak=(.*) ]]; then
+            currentVal=${BASH_REMATCH[1]} 
+            #if [ ${currentVal} -gt ${maxVal} ]; then
+	    if (( $(echo "$currentVal > $maxVal" |bc -l) )); then
+               maxVal=${currentVal}
+            fi
+
+            ((numSamples++))
+            if [ ${numSamples} -ge ${PEAK_OUTPUT_NUMSAMPLES} ]; then
+               echo $maxVal > $PEAK_OUTPUT_FILE
+	       maxVal=-150
+	       numSamples=0
+            fi
+	 fi
+      done
+   }
+   sleep 2 # so we don't get stuck using 100% cpu when ffmpeg bombs out
+done
